@@ -1,0 +1,81 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: coffee_pos_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${DB_NAME:-coffee_pos}
+      POSTGRES_USER:     ${DB_USER:-pos_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+      TZ:                Asia/Taipei
+      PGTZ:              Asia/Taipei
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-pos_user} -d ${DB_NAME:-coffee_pos}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: coffee_pos_api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DB_HOST: db
+      TZ: Asia/Taipei
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/app/app
+      - ./migrations:/app/migrations
+      - ./scripts:/app/scripts
+      - ./logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" 2>/dev/null && echo ok || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  backup:
+    image: postgres:16-alpine
+    container_name: coffee_pos_backup
+    restart: unless-stopped
+    environment:
+      PGPASSWORD: ${DB_PASSWORD:-changeme}
+      TZ: Asia/Taipei
+      DB_HOST: db
+      DB_USER: ${DB_USER:-pos_user}
+      DB_NAME: ${DB_NAME:-coffee_pos}
+    volumes:
+      - ./backups:/backups
+    entrypoint: >
+      sh -c "
+        echo 'backup scheduler started';
+        while true; do
+          FILENAME=/backups/coffee_pos_$$(date +%Y%m%d_%H%M%S).sql.gz;
+          pg_dump -h $$DB_HOST -U $$DB_USER $$DB_NAME | gzip > $$FILENAME;
+          echo \"[$$(date '+%Y-%m-%d %H:%M:%S')] backup: $$FILENAME\";
+          find /backups -name '*.sql.gz' -mtime +30 -delete;
+          sleep 86400;
+        done
+      "
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+    name: coffee_pos_postgres_data
